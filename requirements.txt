@@ -1,32 +1,21 @@
 # Bacco v2.0 - Apple Detection System
 # Requirements for Jetson Thor / JetPack 7.1
-
-# ==============================================================================
-# CONFIGURAZIONE CPU-ONLY (FALLBACK)
-# ==============================================================================
-# JetPack 7.1 è troppo nuovo - non esistono wheel PyTorch con CUDA.
-# Questa configurazione usa PyTorch CPU-only come fallback temporaneo.
-# 
-# Performance attese:
-# - Con GPU (dopo compilazione PyTorch): ~25-30 FPS
-# - Con CPU (questa config): ~4 FPS
-# 
-# INSTALLAZIONE:
-#   python3.10 -m pip install --user -r requirements.txt
-# 
-# RUN:
-#   python3.10 main.py test_video.mp4
-# 
-# Per GPU: Vedi README.md sezione "Opzione A: PyTorch da Sorgente"
-# ==============================================================================
-
-# PyTorch CPU-only (temporaneo fino a wheel NVIDIA per JetPack 7.1)
-torch==2.1.0
-torchvision==0.16.0
+# ==========================================
+#
+# INSTALLAZIONE GPU (RACCOMANDATO):
+#   bash setup_gpu.sh        # Installa PyTorch GPU + dipendenze
+#   python3.10 main.py video.mp4
+#
+# PyTorch viene installato separatamente via wheel NVIDIA
+# (non incluso qui per evitare conflitti con la versione ottimizzata Jetson)
+#
+# Performance:
+#   - GPU (dopo setup_gpu.sh): ~25-35 FPS
+#   - CPU (torch generico):    ~4 FPS
+# ==========================================
 
 # Computer Vision
 opencv-python==4.10.0.84
-opencv-contrib-python==4.10.0.84
 
 # Object Detection
 ultralytics==8.3.36  # YOLOWorld + utilities

@@ -34,55 +34,78 @@ Sistema di rilevamento e tracciamento automatico delle mele su video, ottimizzat
 
 ## 🚀 Installazione
 
-### 1. Setup Virtual Environment
+### Metodo 1: Setup Automatico GPU (Consigliato per Jetson Thor)
 
 ```bash
 cd Bacco
-python3 -m venv venv
-source venv/bin/activate
+bash setup_gpu.sh
 ```
 
-### 2. Installa Dipendenze
+Lo script esegue automaticamente:
+1. Verifica Python 3.10 e CUDA 13.0
+2. Installa PyTorch 2.10.0+cu130 da PyTorch.org
+3. Rimuove le librerie CUDA pip che confliggono con JetPack
+4. Installa le dipendenze Bacco
+5. Verifica che tutto funzioni
+
+### Metodo 2: Setup Manuale (se lo script fallisce)
 
 ```bash
-pip install --upgrade pip
-pip install -r requirements.txt
-```
+# 1. Installa PyTorch con CUDA 13.0
+pip install --user torch torchvision --index-url https://download.pytorch.org/whl/cu130
 
-### 3. Fix GPU (IMPORTANTE per Jetson)
+# 2. IMPORTANTE: Rimuovi le librerie CUDA pip che confliggono con JetPack
+pip uninstall nvidia-cublas nvidia-cudnn-cu13 nvidia-cufft nvidia-curand nvidia-cusolver nvidia-cusparse -y
 
-Se la GPU non viene riconosciuta:
+# 3. Installa dipendenze Bacco
+pip install -r requirements_gpu.txt
 
-```bash
-# Esegui lo script di fix automatico
-bash fix_cuda.sh
-
-# Verifica che tutto funzioni
+# 4. Verifica GPU
+export LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
 python check_gpu.py
 ```
 
-**Nota**: Il primo avvio scaricherà automaticamente il modello YOLOWorld (~40MB) in `./models/`
+> **⚠️ IMPORTANTE**: I wheel PyTorch da pytorch.org includono librerie CUDA (nvidia-cublas, ecc.) che confliggono con quelle di JetPack. La rimozione al passo 2 è obbligatoria per evitare errori `CUBLAS_STATUS_INVALID_VALUE`.
+
+### Verificare Setup GPU
+
+```bash
+python check_gpu.py
+```
+
+Dovresti vedere:
+```
+✅ PyTorch installato: 2.10.0+cu130
+✅ CUDA disponibile: True
+✅ GPU Trovata: NVIDIA Thor
+✅ Tensor allocato su GPU: cuda:0
+```
 
 ---
 
 ## 🎬 Utilizzo
 
-### Metodo 1: Da Terminale con Argomento
+### Metodo 1: Launcher GPU (Consigliato)
 
 ```bash
-python main.py /path/to/video.mp4
+./run_bacco_gpu.sh test_video.mp4
 ```
 
-### Metodo 2: Input Interattivo
+Il launcher imposta automaticamente `LD_LIBRARY_PATH` per usare le librerie CUDA di sistema.
+
+### Metodo 2: Da Terminale direttamente
 
 ```bash
-python main.py
+export LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
+python3.10 main.py test_video.mp4
+```
+
+### Metodo 3: Input Interattivo
+
+```bash
+./run_bacco_gpu.sh
 # Il programma chiederà il path del video
 ```
-
-### Metodo 3: Drag & Drop
-
-Trascina il file MP4 nel terminale quando richiesto.
 
 ---
 
@@ -169,12 +192,11 @@ Frame 0245 | Current: 8 apples | Total: 23 unique | FPS: 28.3
 # Step 1: Diagnostica
 python check_gpu.py
 
-# Step 2: Fix automatico
-bash fix_cuda.sh
+# Step 2: Setup GPU (installa PyTorch CUDA + rimuove lib conflittuali)
+bash setup_gpu.sh
 
-# Step 3: Riavvia terminale e ritesta
-source venv/bin/activate
-python main.py video.mp4
+# Step 3: Usa il launcher GPU
+./run_bacco_gpu.sh video.mp4
 ```
 
 ### Problema: "ModuleNotFoundError: No module named 'torch'"
@@ -218,14 +240,15 @@ pip install -r requirements.txt
 
 ```
 Bacco/
-├── venv/                      # Virtual environment
 ├── models/                    # Modelli scaricati
 │   ├── .gitkeep
 │   └── yolov8s-worldv2.pt    # (scaricato automaticamente)
-├── main.py                    # Codice principale v2.0
-├── check_gpu.py               # Script diagnostica GPU (NUOVO)
-├── fix_cuda.sh                # Script fix CUDA automatico (NUOVO)
+├── main.py                    # Codice principale v2.0 GPU
+├── check_gpu.py               # Script diagnostica GPU
+├── setup_gpu.sh               # Setup automatico GPU (JetPack 7.1)
+├── run_bacco_gpu.sh           # Launcher con LD_LIBRARY_PATH
 ├── requirements.txt           # Dipendenze Python
+├── requirements_gpu.txt       # Dipendenze GPU (no PyTorch)
 ├── .gitignore                 # Git ignore
 └── README.md                  # Questo file
 ```
@@ -303,19 +326,19 @@ CLAHE (Contrast Limited Adaptive Histogram Equalization) migliora contrasto loca
 
 ### Colori Fissi
 
-- **Rosso (255,0,0)**: Bbox + Ellisse → Indica mela rilevata
+- **Rosso (255,0,0)**: Bbox + Ellisse (fill con 0.6 alpha)
+- **Blu sfondo (255,0,0 BGR)**: Filtro sfondo con 0.4 alpha
 - **Bordeaux (139,0,0)**: Traiettoria → Mostra movimento nel tempo
 
 ### Performance su Jetson Thor
 
-**Con GPU (CUDA 13.0)**:
-- YOLOv8s-World + CLAHE + ByteTrack su 1280px: ~25-35 FPS ✅
-- Orizzontale 1280x720: ~30-35 FPS ✅
-- Verticale 720x1280: ~30-35 FPS ✅
-- 4K→1280: ~25-30 FPS ✅
+**Con GPU (CUDA 13.0) + `./run_bacco_gpu.sh`**:
+- 4K video → ~40 FPS (benchmark, senza display)
+- Con rendering completo (ellissi + filtro sfondo): ~18-20 FPS ✅
+- Orizzontale 1280x720: ~25-30 FPS ✅
 
 **Senza GPU (CPU only)**:
-- ~3-5 FPS ❌ → Esegui `bash fix_cuda.sh` per abilitare GPU!
+- ~3-5 FPS ❌ → Esegui `bash setup_gpu.sh` per abilitare GPU!
 
 **Bottleneck**: Inferenza YOLO (~60%), tracking (~20%), rendering (~15%), CLAHE (~5%)
 

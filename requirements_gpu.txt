@@ -1,0 +1,29 @@
+# Bacco v2.0 - GPU Requirements
+# ==============================
+# Per Jetson Thor / JetPack 7.1 / CUDA 13.0
+#
+# IMPORTANTE: PyTorch viene installato separatamente via setup_gpu.sh
+# (wheel NVIDIA ottimizzato per Jetson)
+#
+# INSTALLAZIONE:
+#   1. bash setup_gpu.sh          # Installa PyTorch + dipendenze
+#   2. python3.10 main.py video.mp4
+#
+# Performance attese: ~25-35 FPS (GPU accelerato)
+# ==============================================================================
+
+# Computer Vision
+opencv-python==4.10.0.84
+
+# Object Detection
+ultralytics==8.3.36  # YOLOWorld + utilities
+
+# Tracking & Visualization
+supervision==0.24.0
+
+# Core Dependencies
+numpy==1.26.4
+Pillow==10.4.0
+PyYAML==6.0.2
+scipy==1.13.1
+tqdm==4.66.5

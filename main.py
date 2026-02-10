@@ -39,38 +39,71 @@ class Config:
     MODELS_DIR = Path("./models")
     YOLO_MODEL_NAME = "yolov8s-worldv2.pt"
     
-    # === DETECTION ===
-    YOLO_CONFIDENCE = 0.03  # Threshold molto basso per catturare mele parziali (era 0.05)
-    YOLO_PROMPTS = ["apple", "red apple", "green apple"]  # Multi-prompt per recall
-    NMS_THRESHOLD = 0.4     # NMS aggressivo per rimuovere duplicati da multi-prompt
+    # === DETECTION (HIGH RECALL + TEMPORAL FILTER) ===
+    YOLO_CONFIDENCE = 0.05    # Basso per catturare mele parziali/dietro vetro
+    YOLO_PROMPTS = [
+        "apple",                     # Base detection
+        "red apple",                 # Colore specifico
+        "apple on tree",             # Contesto frutteto
+        "round red fruit",           # Forma + colore
+        "ripe apple on branch",      # Mela matura su ramo
+        "small red sphere in leaves", # Mele piccole tra foglie
+        "apple partially hidden",    # Mele parzialmente occluse
+        "red round fruit hanging",   # Mele pendenti
+        "red object on a tree", 
+        "red object under a leaf"
+    ]
+    NMS_THRESHOLD = 0.3       # Aggressivo per eliminare duplicati
+    YOLO_IMGSZ = 1280         # Risoluzione interna YOLO (più alto = vede meglio piccoli)
     
-    # === TRACKING ===
-    TRACK_THRESH = 0.4        # Confidence minima per iniziare un track
-    TRACK_BUFFER = 60         # Frame di buffer prima di "uccidere" un ID
-    MATCH_THRESH = 0.7        # IoU threshold per matching tracks
+    # === ADAPTIVE PARAMETERS ===
+    ADAPTIVE_PARAMS = False   # Disabled for stable parameters
+    MIN_CONFIDENCE = 0.01
+    MAX_CONFIDENCE = 0.10
+    RECALIBRATE_INTERVAL = 30
     
-    # === SMOOTHING ===
-    SMOOTH_WINDOW = 5         # Finestra per media mobile coordinate
+    # === TRACKING (CONSERVATIVE) ===
+    TRACK_THRESH = 0.15       # Soglia attivazione bilanciata
+    TRACK_BUFFER = 60         # Buffer 2s @ 30fps
+    MATCH_THRESH = 0.8        # IoU matching rigoroso per ID stabili
+    MIN_CONSECUTIVE = 3       # Track confermato dopo 3 frame consecutivi
     
-    # === ENHANCEMENT (NUOVO) ===
+    # === SMOOTHING (AGGRESSIVE) ===
+    SMOOTH_WINDOW = 20        # Smoothing forte per bounding box stabili
+    
+    # === TEMPORAL FILTER ===
+    MIN_CONSECUTIVE_FRAMES = 2   # 2 frame consecutivi = stabile (più reattivo)
+    TEMPORAL_MATCH_DISTANCE = 60 # Distanza leggermente maggiore per matching
+    
+    # === DETECTION CARRY-FORWARD ===
+    CARRY_FRAMES = 5             # Porta avanti detection mancanti per N frame
+    CARRY_DECAY = 0.9            # Decadimento confidence per frame portato avanti
+    
+    # === ENHANCEMENT (CONDITIONAL) ===
     USE_CLAHE = True          # Abilita CLAHE per mele in ombra/parziali
-    CLAHE_CLIP_LIMIT = 2.0    # Limite contrasto CLAHE
+    CLAHE_CLIP_LIMIT = 1.5    # Ridotto per limitare amplificazione noise
     CLAHE_TILE_SIZE = (8, 8)  # Dimensione tile CLAHE
     
-    # === RESIZE ===
-    RESIZE_STRATEGY = "adaptive"  # 'adaptive', 'native', 'fixed'
-    TARGET_SIZE = 1280        # Dimensione massima lato lungo
-    MIN_SIZE = 640            # Dimensione minima (sotto questa, non resize)
+    # === RESIZE (auto-scaling based on input) ===
+    RESIZE_STRATEGY = "auto"  # 'auto', 'adaptive', 'native', 'fixed'
+    TARGET_SIZE = 1920        # Aumentato per migliore detection (Thor ha 131GB VRAM)
+    MIN_SIZE = 640            # Dimensione minima processing
+    MAX_SIZE = 2560           # Dimensione massima processing
     
     # === VISUALIZZAZIONE (COLORI FISSI) ===
     BBOX_COLOR = (0, 0, 255)         # Rosso BGR per bounding box
-    ELLIPSE_COLOR = (0, 0, 255)      # Rosso BGR per ellisse
+    ELLIPSE_COLOR = (0, 0, 255)      # Rosso BGR per ellisse (fill)
     TRAJECTORY_COLOR = (0, 0, 139)   # Bordeaux (dark red) per traiettoria
     MAX_TRAJECTORY_POINTS = 30       # Punti massimi per traiettoria
-    ELLIPSE_ALPHA = 0.3              # Trasparenza ellissi
+    ELLIPSE_ALPHA = 0.6              # Trasparenza ellissi
     BBOX_THICKNESS = 2               # Spessore bounding box
     TEXT_SCALE = 0.6                 # Scala testo
     LINE_THICKNESS = 2               # Spessore linee traiettoria
+    SHOW_TRAJECTORY = False          # Mostra linee traiettoria (disabilitato)
+    
+    # === BACKGROUND FILTER ===
+    BG_FILTER_COLOR = (255, 0, 0)    # Blu BGR per filtro sfondo
+    BG_FILTER_ALPHA = 0.4            # Trasparenza filtro sfondo
     
     # === PERFORMANCE ===
     TARGET_FPS = 20           # FPS target minimo
@@ -251,6 +284,44 @@ class ResizeHandler:
         
         resized = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
         return resized, scale
+    
+    @staticmethod
+    def auto_resize(frame: np.ndarray) -> Tuple[np.ndarray, float]:
+        """
+        Auto-resize intelligente basato su dimensioni input.
+        
+        Strategia:
+        - Video piccoli (< 640px): upscale a 640 per migliore detection
+        - Video medi (640-1280): mantiene native per massima precisione
+        - Video grandi (1280-1920): resize a 1280 per bilanciare speed/accuracy
+        - Video 4K+ (> 1920): resize a 1280 per performance
+        
+        Returns:
+            (frame_resized, scale_factor)
+        """
+        h, w = frame.shape[:2]
+        max_dim = max(h, w)
+        
+        # Video piccolo → upscale per migliore detection
+        if max_dim < Config.MIN_SIZE:
+            target = Config.MIN_SIZE
+            scale = target / max_dim
+        # Video medio → mantiene native per precisione
+        elif max_dim <= Config.TARGET_SIZE:
+            return frame, 1.0
+        # Video grande/4K → resize per performance
+        else:
+            target = Config.TARGET_SIZE
+            scale = target / max_dim
+        
+        new_w = int(w * scale)
+        new_h = int(h * scale)
+        new_w = new_w - (new_w % 2)
+        new_h = new_h - (new_h % 2)
+        
+        interpolation = cv2.INTER_CUBIC if scale > 1.0 else cv2.INTER_LINEAR
+        resized = cv2.resize(frame, (new_w, new_h), interpolation=interpolation)
+        return resized, scale
 
 
 # =============================================================================
@@ -259,36 +330,66 @@ class ResizeHandler:
 
 class IDRegistry:
     """
-    Registry persistente per tracciare ID unici nel tempo
-    Gestisce l'apparizione/scomparsa di track per conteggio accurato
+    Registry persistente per tracciare ID unici nel tempo.
+    Include de-duplicazione spaziale: se un nuovo track appare dove
+    un track precedente è appena scomparso, viene riconosciuto come
+    lo stesso apple (non conta come nuovo).
     """
     
-    def __init__(self, lost_threshold: int = Config.TRACK_BUFFER):
+    def __init__(self, lost_threshold: int = Config.TRACK_BUFFER, dedup_distance: float = 80.0):
         self.unique_ids = set()              # Tutti gli ID mai visti
         self.active_tracks: Dict[int, int] = {}  # {track_id: last_seen_frame}
+        self.track_positions: Dict[int, np.ndarray] = {}  # {track_id: last_bbox_center}
         self.lost_threshold = lost_threshold
+        self.dedup_distance = dedup_distance
         self.total_new_apples = 0            # Contatore progressivo
+        # Posizioni recenti di track persi per de-duplicazione
+        # {track_id: {'center': (x,y), 'frame_lost': int, 'bbox': array}}
+        self.recently_lost: Dict[int, Dict] = {}
+        self.lost_memory_frames = 90         # Ricorda posizioni per 3 secondi
+        self.dedup_map: Dict[int, int] = {}  # {new_id: original_id} mapping
     
-    def update(self, track_ids: List[int], current_frame: int) -> int:
+    def update(self, track_ids: List[int], current_frame: int, 
+               detections=None) -> int:
         """
-        Aggiorna il registry con i track del frame corrente
+        Aggiorna il registry con i track del frame corrente.
+        Usa de-duplicazione spaziale per evitare overcounting.
         
         Args:
             track_ids: Lista di ID dei track attivi
             current_frame: Numero frame corrente
+            detections: Detections con xyxy per posizione spaziale
             
         Returns:
             Numero di nuove mele rilevate in questo frame
         """
         new_apples = 0
         
-        for tid in track_ids:
+        for i, tid in enumerate(track_ids):
+            # Aggiorna posizione corrente
+            if detections is not None and i < len(detections):
+                bbox = detections.xyxy[i]
+                center = np.array([(bbox[0]+bbox[2])/2, (bbox[1]+bbox[3])/2])
+                self.track_positions[tid] = center
+            
             # Nuovo ID mai visto prima
             if tid not in self.unique_ids:
-                self.unique_ids.add(tid)
-                new_apples += 1
-                self.total_new_apples += 1
-                print(f"[APPLE] 🍎 Nuova mela rilevata! ID {tid} | Totale unico: {len(self.unique_ids)}")
+                # Controlla se è un re-ID di un track perso recentemente
+                matched_lost_id = self._find_spatial_match(tid, current_frame)
+                
+                if matched_lost_id is not None:
+                    # È lo stesso apple! Non contare come nuovo
+                    self.unique_ids.add(tid)
+                    self.dedup_map[tid] = matched_lost_id
+                    # Rimuovi dalla lista persi
+                    if matched_lost_id in self.recently_lost:
+                        del self.recently_lost[matched_lost_id]
+                else:
+                    # Genuinamente nuovo
+                    self.unique_ids.add(tid)
+                    new_apples += 1
+                    self.total_new_apples += 1
+                    print(f"[APPLE] 🍎 Nuova mela rilevata! ID {tid} | Totale unico: {self.total_new_apples}")
             
             # Aggiorna ultimo frame visto
             self.active_tracks[tid] = current_frame
@@ -297,6 +398,38 @@ class IDRegistry:
         self._cleanup_lost_tracks(current_frame)
         
         return new_apples
+    
+    def _find_spatial_match(self, new_tid: int, current_frame: int) -> int:
+        """
+        Cerca se il nuovo track corrisponde spazialmente a un track perso.
+        
+        Returns:
+            ID del track perso corrispondente, o None
+        """
+        if new_tid not in self.track_positions:
+            return None
+        
+        new_center = self.track_positions[new_tid]
+        best_match = None
+        best_dist = float('inf')
+        
+        for lost_tid, lost_info in self.recently_lost.items():
+            # Controlla che non sia troppo vecchio
+            frames_since_lost = current_frame - lost_info['frame_lost']
+            if frames_since_lost > self.lost_memory_frames:
+                continue
+            
+            lost_center = lost_info['center']
+            dist = np.sqrt(np.sum((new_center - lost_center) ** 2))
+            
+            if dist < self.dedup_distance and dist < best_dist:
+                best_dist = dist
+                best_match = lost_tid
+        
+        if best_match is not None:
+            print(f"[DEDUP] 🔄 ID {new_tid} riconosciuto come ex-ID {best_match} (dist={best_dist:.0f}px)")
+        
+        return best_match
     
     def _cleanup_lost_tracks(self, current_frame: int):
         """Rimuove track persi da troppo tempo dal registry attivo"""
@@ -308,14 +441,25 @@ class IDRegistry:
                 lost_ids.append(tid)
         
         for tid in lost_ids:
+            # Salva posizione per de-duplicazione futura
+            if tid in self.track_positions:
+                self.recently_lost[tid] = {
+                    'center': self.track_positions[tid].copy(),
+                    'frame_lost': current_frame
+                }
             del self.active_tracks[tid]
-            if lost_ids:  # Log solo se ce n'è almeno uno
-                print(f"[TRACK] 👻 ID {tid} perso da {self.lost_threshold} frame (rimosso da attivi)")
+            print(f"[TRACK] 👻 ID {tid} perso da {self.lost_threshold} frame (rimosso da attivi)")
+        
+        # Cleanup memorie troppo vecchie
+        old_lost = [tid for tid, info in self.recently_lost.items()
+                    if current_frame - info['frame_lost'] > self.lost_memory_frames]
+        for tid in old_lost:
+            del self.recently_lost[tid]
     
     def get_stats(self) -> Dict[str, int]:
         """Ritorna statistiche correnti"""
         return {
-            "total_unique": len(self.unique_ids),
+            "total_unique": self.total_new_apples,  # Usa contatore de-duplicato
             "currently_active": len(self.active_tracks),
             "total_new": self.total_new_apples
         }
@@ -382,6 +526,262 @@ class TrajectorySmooth:
 
 
 # =============================================================================
+# TEMPORAL FILTER - Filtra detection instabili
+# =============================================================================
+
+class TemporalFilter:
+    """
+    Filtra detection che non appaiono per N frame consecutivi
+    Riduce flickering da detection instabili
+    """
+    
+    def __init__(
+        self, 
+        min_consecutive_frames: int = Config.MIN_CONSECUTIVE_FRAMES,
+        max_distance: float = Config.TEMPORAL_MATCH_DISTANCE
+    ):
+        self.min_frames = min_consecutive_frames
+        self.max_distance = max_distance
+        self.detection_history: Dict[str, deque] = defaultdict(
+            lambda: deque(maxlen=min_consecutive_frames)
+        )
+        self.frame_count = 0
+        # Cleanup periodico per detection vecchie
+        self.last_cleanup_frame = 0
+        self.cleanup_interval = 100
+    
+    def filter(self, detections: sv.Detections) -> sv.Detections:
+        """
+        Ritorna solo detection stabili (presenti per >= min_frames consecutivi)
+        
+        Args:
+            detections: Detection raw dal modello
+            
+        Returns:
+            Detection filtrate (solo quelle stabili)
+        """
+        self.frame_count += 1
+        
+        if len(detections) == 0:
+            return detections
+        
+        stable_indices = []
+        
+        for i in range(len(detections)):
+            bbox = detections.xyxy[i]
+            bbox_center = (
+                float((bbox[0] + bbox[2]) / 2), 
+                float((bbox[1] + bbox[3]) / 2)
+            )
+            
+            # Trova detection simile in history
+            detection_id = self._find_matching_id(bbox_center)
+            
+            if detection_id is None:
+                # Nuova detection → crea nuovo ID basato su posizione
+                detection_id = f"{bbox_center[0]:.0f}_{bbox_center[1]:.0f}_{self.frame_count}"
+            
+            # Aggiungi a history
+            self.detection_history[detection_id].append({
+                'center': bbox_center,
+                'frame': self.frame_count
+            })
+            
+            # Mantieni solo se stabile (presente per min_frames)
+            if len(self.detection_history[detection_id]) >= self.min_frames:
+                stable_indices.append(i)
+        
+        # Cleanup periodico
+        if self.frame_count - self.last_cleanup_frame > self.cleanup_interval:
+            self._cleanup_old_detections()
+            self.last_cleanup_frame = self.frame_count
+        
+        # Filtra detections mantenendo solo indici stabili
+        if stable_indices:
+            # Crea nuovo oggetto Detections con solo detection stabili
+            return sv.Detections(
+                xyxy=detections.xyxy[stable_indices],
+                confidence=detections.confidence[stable_indices] if detections.confidence is not None else None,
+                class_id=detections.class_id[stable_indices] if detections.class_id is not None else None,
+                tracker_id=detections.tracker_id[stable_indices] if detections.tracker_id is not None else None
+            )
+        else:
+            return sv.Detections.empty()
+    
+    def _find_matching_id(self, center: Tuple[float, float]) -> Optional[str]:
+        """
+        Trova detection ID esistente entro max_distance
+        
+        Args:
+            center: Centro bbox (x, y)
+            
+        Returns:
+            ID detection se trovata, None altrimenti
+        """
+        for det_id, history in self.detection_history.items():
+            if history:
+                last_entry = history[-1]
+                last_center = last_entry['center']
+                last_frame = last_entry['frame']
+                
+                # Ignora detection troppo vecchie (> 10 frame fa)
+                if self.frame_count - last_frame > 10:
+                    continue
+                
+                # Calcola distanza euclidea
+                dist = np.sqrt(
+                    (center[0] - last_center[0])**2 + 
+                    (center[1] - last_center[1])**2
+                )
+                
+                if dist < self.max_distance:
+                    return det_id
+        
+        return None
+    
+    def _cleanup_old_detections(self):
+        """Rimuove detection non viste da troppo tempo"""
+        ids_to_remove = []
+        
+        for det_id, history in self.detection_history.items():
+            if history:
+                last_frame = history[-1]['frame']
+                if self.frame_count - last_frame > 50:  # Non viste da 50 frame
+                    ids_to_remove.append(det_id)
+        
+        for det_id in ids_to_remove:
+            del self.detection_history[det_id]
+
+
+
+# =============================================================================
+# DETECTION CARRY-FORWARD - Persistenza temporale detection
+# =============================================================================
+
+class DetectionCarryForward:
+    """
+    Se un apple trackato scompare per breve tempo (occlusione momentanea),
+    porta avanti la sua ultima posizione nota per alcuni frame.
+    Riduce drammaticamente la perdita di track e il churn degli ID.
+    """
+    
+    def __init__(
+        self,
+        carry_frames: int = Config.CARRY_FRAMES,
+        carry_decay: float = Config.CARRY_DECAY,
+        match_distance: float = Config.TEMPORAL_MATCH_DISTANCE
+    ):
+        self.carry_frames = carry_frames
+        self.carry_decay = carry_decay
+        self.match_distance = match_distance
+        # {track_id: {'bbox': array, 'confidence': float, 'frames_missing': int}}
+        self.tracked_positions: Dict[int, Dict] = {}
+    
+    def update_and_carry(
+        self,
+        detections: sv.Detections,
+        tracked_detections: sv.Detections
+    ) -> sv.Detections:
+        """
+        Aggiorna posizioni note e porta avanti detection mancanti.
+        
+        Args:
+            detections: Detection raw (pre-tracking, post-temporal-filter)
+            tracked_detections: Detection con tracker_id da ByteTrack
+            
+        Returns:
+            Detection arricchite con carry-forward
+        """
+        current_track_ids = set()
+        
+        # Aggiorna posizioni note dai track attivi
+        if tracked_detections.tracker_id is not None:
+            for i in range(len(tracked_detections)):
+                tid = int(tracked_detections.tracker_id[i])
+                current_track_ids.add(tid)
+                self.tracked_positions[tid] = {
+                    'bbox': tracked_detections.xyxy[i].copy(),
+                    'confidence': float(tracked_detections.confidence[i]) if tracked_detections.confidence is not None else 0.5,
+                    'frames_missing': 0
+                }
+        
+        # Trova track persi e genera carry-forward
+        carry_bboxes = []
+        carry_confidences = []
+        carry_track_ids = []
+        lost_ids = []
+        
+        for tid, info in self.tracked_positions.items():
+            if tid not in current_track_ids:
+                info['frames_missing'] += 1
+                
+                if info['frames_missing'] <= self.carry_frames:
+                    # Porta avanti con confidence decadente
+                    carried_conf = info['confidence'] * (self.carry_decay ** info['frames_missing'])
+                    
+                    # Verifica che non sia troppo vicino a una detection esistente
+                    bbox_center = (
+                        (info['bbox'][0] + info['bbox'][2]) / 2,
+                        (info['bbox'][1] + info['bbox'][3]) / 2
+                    )
+                    
+                    # Controlla sovrapposizione con detection esistenti
+                    is_duplicate = False
+                    if len(detections) > 0:
+                        for j in range(len(detections)):
+                            det_center = (
+                                (detections.xyxy[j][0] + detections.xyxy[j][2]) / 2,
+                                (detections.xyxy[j][1] + detections.xyxy[j][3]) / 2
+                            )
+                            dist = np.sqrt(
+                                (bbox_center[0] - det_center[0])**2 +
+                                (bbox_center[1] - det_center[1])**2
+                            )
+                            if dist < self.match_distance:
+                                is_duplicate = True
+                                break
+                    
+                    if not is_duplicate:
+                        carry_bboxes.append(info['bbox'])
+                        carry_confidences.append(carried_conf)
+                        carry_track_ids.append(tid)
+                else:
+                    lost_ids.append(tid)
+        
+        # Rimuovi track persi definitivamente
+        for tid in lost_ids:
+            del self.tracked_positions[tid]
+        
+        # Se ci sono detection da portare avanti, uniscile
+        if carry_bboxes and len(detections) > 0:
+            merged_xyxy = np.concatenate([
+                detections.xyxy,
+                np.array(carry_bboxes)
+            ], axis=0)
+            
+            merged_conf = np.concatenate([
+                detections.confidence if detections.confidence is not None else np.ones(len(detections)),
+                np.array(carry_confidences)
+            ])
+            
+            merged_class_id = np.zeros(len(merged_xyxy), dtype=int)
+            
+            return sv.Detections(
+                xyxy=merged_xyxy,
+                confidence=merged_conf,
+                class_id=merged_class_id
+            )
+        elif carry_bboxes and len(detections) == 0:
+            return sv.Detections(
+                xyxy=np.array(carry_bboxes),
+                confidence=np.array(carry_confidences),
+                class_id=np.zeros(len(carry_bboxes), dtype=int)
+            )
+        
+        return detections
+
+
+# =============================================================================
 # VISUALIZATION MANAGER - Gestione rendering con COLORI FISSI
 # =============================================================================
 
@@ -406,6 +806,36 @@ class VisualizationManager:
     def get_trajectory_color() -> Tuple[int, int, int]:
         """Ritorna colore fisso per traiettoria (bordeaux)"""
         return Config.TRAJECTORY_COLOR
+    
+    def draw_background_filter(
+        self,
+        frame: np.ndarray,
+        color: Tuple[int, int, int] = None,
+        alpha: float = None
+    ) -> np.ndarray:
+        """
+        Applica filtro colore semitrasparente su tutto il frame
+        
+        Args:
+            frame: Frame su cui applicare il filtro
+            color: Colore BGR del filtro (default: BG_FILTER_COLOR)
+            alpha: Trasparenza filtro (default: BG_FILTER_ALPHA)
+        
+        Returns:
+            Frame con filtro applicato
+        """
+        if color is None:
+            color = Config.BG_FILTER_COLOR
+        if alpha is None:
+            alpha = Config.BG_FILTER_ALPHA
+        
+        # Crea overlay colorato
+        overlay = np.full(frame.shape, color, dtype=np.uint8)
+        
+        # Blend con alpha
+        cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, frame)
+        
+        return frame
     
     def draw_bbox(
         self,
@@ -608,7 +1038,7 @@ class AppleDetectionSystem:
         else:
             print(f"[INIT] 💻 Device: {self.device}")
             print("[INIT] ⚠️  GPU non disponibile, uso CPU (più lento)")
-            print("[INIT] 💡 Per abilitare GPU, esegui: bash fix_cuda.sh")
+            print("[INIT] 💡 Per abilitare GPU, esegui: bash setup_gpu.sh")
         
         # Carica modelli
         model_manager = ModelManager()
@@ -620,12 +1050,15 @@ class AppleDetectionSystem:
             track_activation_threshold=Config.TRACK_THRESH,
             lost_track_buffer=Config.TRACK_BUFFER,
             minimum_matching_threshold=Config.MATCH_THRESH,
-            frame_rate=30  # stima iniziale
+            frame_rate=30,
+            minimum_consecutive_frames=Config.MIN_CONSECUTIVE
         )
         
         # Componenti
         self.id_registry = IDRegistry()
         self.smoother = TrajectorySmooth()
+        self.temporal_filter = TemporalFilter()
+        self.carry_forward = DetectionCarryForward()
         self.viz = VisualizationManager()
         self.resize_handler = ResizeHandler()
         self.enhancer = ImageEnhancer()
@@ -639,7 +1072,8 @@ class AppleDetectionSystem:
     
     def detect_apples(self, frame: np.ndarray) -> sv.Detections:
         """
-        Esegue detection delle mele su un frame con CLASS MERGING + NMS
+        Esegue detection delle mele su un frame con CLASS MERGING + NMS.
+        Usa imgsz alto per catturare oggetti piccoli senza tiling.
         
         Args:
             frame: Frame input (BGR)
@@ -647,11 +1081,12 @@ class AppleDetectionSystem:
         Returns:
             Detections in formato supervision (senza duplicati)
         """
-        # Inferenza con mixed precision se disponibile
+        # Inferenza full-frame con mixed precision e imgsz alto
         with torch.amp.autocast('cuda', enabled=(self.device == "cuda")):
             results = self.model.predict(
                 frame,
                 conf=Config.YOLO_CONFIDENCE,
+                imgsz=Config.YOLO_IMGSZ,
                 verbose=False,
                 device=self.device
             )
@@ -661,11 +1096,8 @@ class AppleDetectionSystem:
         
         # *** CLASS MERGING + NMS per eliminare double counting ***
         if len(detections) > 0:
-            # Step 1: Unisci tutte le classi ["apple", "red apple", "green apple"] in classe 0
             if detections.class_id is not None:
                 detections.class_id[:] = 0
-            
-            # Step 2: Applica NMS aggressivo per rimuovere detection sovrapposte
             detections = detections.with_nms(threshold=Config.NMS_THRESHOLD)
         
         return detections
@@ -683,7 +1115,9 @@ class AppleDetectionSystem:
         start_time = time.time()
         
         # 1. Resize adattivo
-        if self.resize_strategy == "adaptive":
+        if self.resize_strategy == "auto":
+            frame_resized, scale = self.resize_handler.auto_resize(frame)
+        elif self.resize_strategy == "adaptive":
             frame_resized, scale = self.resize_handler.adaptive_resize(frame)
         elif self.resize_strategy == "native":
             frame_resized, scale = self.resize_handler.native_resize(frame)
@@ -699,18 +1133,37 @@ class AppleDetectionSystem:
         # 3. Detection con class merging + NMS
         detections = self.detect_apples(frame_enhanced)
         
+        # 3.5. FILTRO TEMPORALE
+        detections_before = len(detections)
+        detections = self.temporal_filter.filter(detections)
+        detections_after = len(detections)
+        
+        # Log ogni 30 frame
+        if self.frame_count % 30 == 0 and detections_before != detections_after:
+            print(f"[FILTER] Frame {self.frame_count}: {detections_before} det → {detections_after} stabili")
+        # 3.5b. CARRY-FORWARD: inietta detection portate avanti nel flusso
+        detections = self.carry_forward.update_and_carry(detections, detections)
+        
         # 4. Tracking con ByteTrack
-        detections = self.tracker.update_with_detections(detections)
+        tracked_detections = self.tracker.update_with_detections(detections)
+        
+        # 4.5. Aggiorna carry-forward con posizioni tracciati correnti
+        self.carry_forward.update_and_carry(detections, tracked_detections)
+        detections = tracked_detections
         
         # 5. Aggiorna ID Registry
         track_ids = detections.tracker_id.tolist() if detections.tracker_id is not None else []
-        self.id_registry.update(track_ids, self.frame_count)
+        self.id_registry.update(track_ids, self.frame_count, detections=detections)
         
         # 6. Annotazione frame (usa frame_resized, non enhanced, per visualizzazione)
         frame_annotated = frame_resized.copy()
         
+        # 6.1. Applica filtro sfondo blu
+        frame_annotated = self.viz.draw_background_filter(frame_annotated)
+        
         if len(detections) > 0:
-            # Per ogni detection con track
+            # Pre-calcola tutte le bbox smoothed
+            smoothed_data = []
             for i in range(len(detections)):
                 bbox = detections.xyxy[i]
                 track_id = int(detections.tracker_id[i]) if detections.tracker_id is not None else -1
@@ -719,25 +1172,44 @@ class AppleDetectionSystem:
                 if track_id == -1:
                     continue
                 
-                # Smooth bbox
                 bbox_smooth = self.smoother.smooth_bbox(track_id, bbox)
+                smoothed_data.append((bbox_smooth, track_id, confidence))
+            
+            # 6.2. Disegna TUTTE le ellissi su un singolo overlay, poi blend una volta
+            if smoothed_data:
+                overlay = frame_annotated.copy()
+                ellipse_color = self.viz.get_ellipse_color()
+                for bbox_smooth, track_id, _ in smoothed_data:
+                    x1, y1, x2, y2 = map(int, bbox_smooth)
+                    center = ((x1 + x2) // 2, (y1 + y2) // 2)
+                    axes = ((x2 - x1) // 2, (y2 - y1) // 2)
+                    cv2.ellipse(overlay, center, axes, 0, 0, 360, ellipse_color, -1)
                 
-                # Disegna ellisse (ROSSO)
-                frame_annotated = self.viz.draw_ellipse(frame_annotated, bbox_smooth, track_id)
+                cv2.addWeighted(overlay, Config.ELLIPSE_ALPHA, frame_annotated, 
+                               1 - Config.ELLIPSE_ALPHA, 0, frame_annotated)
                 
-                # Disegna bbox (ROSSO)
+                # Bordi ellissi (non trasparenti)
+                for bbox_smooth, track_id, _ in smoothed_data:
+                    x1, y1, x2, y2 = map(int, bbox_smooth)
+                    center = ((x1 + x2) // 2, (y1 + y2) // 2)
+                    axes = ((x2 - x1) // 2, (y2 - y1) // 2)
+                    cv2.ellipse(frame_annotated, center, axes, 0, 0, 360, ellipse_color, 2)
+            
+            # 6.3. Disegna bbox e traiettorie (opachi, sopra le ellissi)
+            for bbox_smooth, track_id, confidence in smoothed_data:
                 frame_annotated = self.viz.draw_bbox(frame_annotated, bbox_smooth, track_id, confidence)
                 
-                # Disegna traiettoria (BORDEAUX)
-                centers = self.smoother.get_center_history(track_id)
-                frame_annotated = self.viz.draw_trajectory(frame_annotated, centers, track_id)
+                if Config.SHOW_TRAJECTORY:
+                    centers = self.smoother.get_center_history(track_id)
+                    frame_annotated = self.viz.draw_trajectory(frame_annotated, centers, track_id)
         
         # 7. HUD con statistiche
         stats = self.id_registry.get_stats()
+        current_drawn = len(smoothed_data) if len(detections) > 0 else 0
         frame_annotated = self.viz.draw_hud(
             frame_annotated,
             self.frame_count,
-            stats["currently_active"],
+            current_drawn,  # Mostra mele effettivamente disegnate
             stats["total_unique"],
             self.fps
         )
@@ -877,7 +1349,8 @@ def main():
         print(f"[CUDA] 🔢 CUDA Version: {torch.version.cuda}")
     else:
         print("[CUDA] ⚠️  GPU non disponibile, uso CPU (più lento)")
-        print("[CUDA] 💡 Per fix GPU, esegui: bash fix_cuda.sh")
+        print("[CUDA] 💡 Per fix GPU, esegui: bash setup_gpu.sh")
+        print("[CUDA] 🚀 Poi usa: ./run_bacco_gpu.sh video.mp4")
         print("[CUDA] 🔍 Per diagnostica: python check_gpu.py")
     
     # Path video (modifica con il tuo video)
