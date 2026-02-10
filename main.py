@@ -63,7 +63,7 @@ class Config:
     RECALIBRATE_INTERVAL = 30
     
     # === TRACKING (CONSERVATIVE) ===
-    TRACK_THRESH = 0.15       # Soglia attivazione bilanciata
+    TRACK_THRESH = 0.10       # Basso per massimizzare track nella demo
     TRACK_BUFFER = 60         # Buffer 2s @ 30fps
     MATCH_THRESH = 0.8        # IoU matching rigoroso per ID stabili
     MIN_CONSECUTIVE = 3       # Track confermato dopo 3 frame consecutivi
@@ -90,24 +90,46 @@ class Config:
     MIN_SIZE = 640            # Dimensione minima processing
     MAX_SIZE = 2560           # Dimensione massima processing
     
-    # === VISUALIZZAZIONE (COLORI FISSI) ===
-    BBOX_COLOR = (0, 0, 255)         # Rosso BGR per bounding box
-    ELLIPSE_COLOR = (0, 0, 255)      # Rosso BGR per ellisse (fill)
-    TRAJECTORY_COLOR = (0, 0, 139)   # Bordeaux (dark red) per traiettoria
-    MAX_TRAJECTORY_POINTS = 30       # Punti massimi per traiettoria
-    ELLIPSE_ALPHA = 0.6              # Trasparenza ellissi
-    BBOX_THICKNESS = 2               # Spessore bounding box
-    TEXT_SCALE = 0.6                 # Scala testo
-    LINE_THICKNESS = 2               # Spessore linee traiettoria
-    SHOW_TRAJECTORY = False          # Mostra linee traiettoria (disabilitato)
+    # === VISUALIZZAZIONE (PREMIUM DEMO) ===
+    # Soglie confidence per colorazione
+    CONF_HIGH_THRESH = 0.35
+    CONF_MED_THRESH = 0.20
     
-    # === BACKGROUND FILTER ===
-    BG_FILTER_COLOR = (255, 0, 0)    # Blu BGR per filtro sfondo
-    BG_FILTER_ALPHA = 0.4            # Trasparenza filtro sfondo
+    # Colori tracked per confidence (BGR)
+    COLOR_TRACKED_HIGH = (80, 220, 100)    # Verde brillante
+    COLOR_TRACKED_MED = (0, 190, 255)      # Ambra caldo
+    COLOR_TRACKED_LOW = (60, 130, 255)     # Arancione-rosso
+    COLOR_DETECTION = (220, 200, 160)      # Ciano chiaro per detection ring
     
-    # === PERFORMANCE ===
-    TARGET_FPS = 20           # FPS target minimo
-    DISPLAY_WIDTH = 1280      # Larghezza display window (per UI)
+    # Colori HUD (BGR)
+    COLOR_HUD_BG = (30, 25, 20)            # Pannello quasi-nero
+    COLOR_HUD_ACCENT = (0, 200, 255)       # Accento ambra
+    COLOR_HUD_TEXT = (240, 240, 240)       # Testo bianco
+    COLOR_HUD_LABEL = (160, 160, 160)      # Etichette grigie
+    COLOR_FPS_GOOD = (80, 220, 100)        # FPS verde (>=15)
+    COLOR_FPS_WARN = (0, 190, 255)         # FPS ambra (>=8)
+    COLOR_FPS_BAD = (60, 60, 255)          # FPS rosso (<8)
+    
+    # Parametri rendering
+    DETECTION_RING_ALPHA = 0.30    # Anelli detection visibili
+    TRACKED_FILL_ALPHA = 0.30     # Fill tracked
+    GLOW_ALPHA = 0.40             # Glow esterno tracked
+    GLOW_THICKNESS = 6            # Spessore glow
+    RING_THICKNESS = 2            # Spessore anello detection
+    BBOX_THICKNESS = 2
+    TEXT_SCALE = 0.45
+    SHOW_TRAJECTORY = False
+    MAX_TRAJECTORY_POINTS = 30
+    TRAJECTORY_COLOR = (0, 0, 139)
+    LINE_THICKNESS = 2
+    
+    # Background filter
+    BG_FILTER_COLOR = (160, 80, 40)    # Tinta blu scuro
+    BG_FILTER_ALPHA = 0.20             # Sottile per chiarezza
+    
+    # Performance
+    TARGET_FPS = 10
+    DISPLAY_WIDTH = 1280
 
 
 # =============================================================================
@@ -782,227 +804,254 @@ class DetectionCarryForward:
 
 
 # =============================================================================
-# VISUALIZATION MANAGER - Gestione rendering con COLORI FISSI
+# VISUALIZATION MANAGER - Premium Demo Rendering
 # =============================================================================
 
 class VisualizationManager:
-    """Gestisce il rendering di bbox, ellissi, traiettorie e UI"""
+    """Gestisce rendering premium per demo stakeholder.
+    
+    Features:
+    - Dual-layer: detection rings (tutti) + tracked annotations (confermati)
+    - Confidence-based coloring: verde/ambra/rosso
+    - Glassmorphism HUD panel
+    - Glow effects per tracked apples
+    """
     
     def __init__(self):
-        # Non serve più color palette, usiamo colori fissi
-        pass
+        self.font_main = cv2.FONT_HERSHEY_DUPLEX
+        self.font_label = cv2.FONT_HERSHEY_SIMPLEX
     
-    @staticmethod
-    def get_bbox_color() -> Tuple[int, int, int]:
-        """Ritorna colore fisso per bbox (rosso)"""
-        return Config.BBOX_COLOR
+    def get_confidence_color(self, confidence: float) -> Tuple[int, int, int]:
+        """Ritorna colore BGR basato sulla confidence"""
+        if confidence >= Config.CONF_HIGH_THRESH:
+            return Config.COLOR_TRACKED_HIGH
+        elif confidence >= Config.CONF_MED_THRESH:
+            return Config.COLOR_TRACKED_MED
+        else:
+            return Config.COLOR_TRACKED_LOW
     
-    @staticmethod
-    def get_ellipse_color() -> Tuple[int, int, int]:
-        """Ritorna colore fisso per ellisse (rosso)"""
-        return Config.ELLIPSE_COLOR
+    def get_fps_color(self, fps: float) -> Tuple[int, int, int]:
+        """Colore FPS: verde=buono, ambra=medio, rosso=lento"""
+        if fps >= 15:
+            return Config.COLOR_FPS_GOOD
+        elif fps >= 8:
+            return Config.COLOR_FPS_WARN
+        else:
+            return Config.COLOR_FPS_BAD
     
-    @staticmethod
-    def get_trajectory_color() -> Tuple[int, int, int]:
-        """Ritorna colore fisso per traiettoria (bordeaux)"""
-        return Config.TRAJECTORY_COLOR
-    
-    def draw_background_filter(
-        self,
-        frame: np.ndarray,
-        color: Tuple[int, int, int] = None,
-        alpha: float = None
-    ) -> np.ndarray:
-        """
-        Applica filtro colore semitrasparente su tutto il frame
-        
-        Args:
-            frame: Frame su cui applicare il filtro
-            color: Colore BGR del filtro (default: BG_FILTER_COLOR)
-            alpha: Trasparenza filtro (default: BG_FILTER_ALPHA)
-        
-        Returns:
-            Frame con filtro applicato
-        """
-        if color is None:
-            color = Config.BG_FILTER_COLOR
-        if alpha is None:
-            alpha = Config.BG_FILTER_ALPHA
-        
-        # Crea overlay colorato
-        overlay = np.full(frame.shape, color, dtype=np.uint8)
-        
-        # Blend con alpha
+    def draw_background_filter(self, frame: np.ndarray) -> np.ndarray:
+        """Applica tinta scura sottile per far risaltare annotazioni"""
+        overlay = np.full(frame.shape, Config.BG_FILTER_COLOR, dtype=np.uint8)
+        alpha = Config.BG_FILTER_ALPHA
         cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, frame)
-        
         return frame
     
-    def draw_bbox(
-        self,
-        frame: np.ndarray,
-        bbox: np.ndarray,
-        track_id: int,
-        confidence: float
-    ) -> np.ndarray:
-        """Disegna bounding box con colore fisso rosso"""
-        x1, y1, x2, y2 = map(int, bbox)
-        color = self.get_bbox_color()
-        
-        # Disegna rettangolo
-        cv2.rectangle(frame, (x1, y1), (x2, y2), color, Config.BBOX_THICKNESS)
-        
-        # Label con ID e confidence
-        label = f"ID:{track_id} ({confidence:.2f})"
-        label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, Config.TEXT_SCALE, 2)[0]
-        
-        # Background per label
-        cv2.rectangle(
-            frame,
-            (x1, y1 - label_size[1] - 10),
-            (x1 + label_size[0] + 5, y1),
-            color,
-            -1
-        )
-        
-        # Testo label
-        cv2.putText(
-            frame,
-            label,
-            (x1 + 2, y1 - 5),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            Config.TEXT_SCALE,
-            (255, 255, 255),
-            2
-        )
-        
-        return frame
-    
-    def draw_ellipse(
-        self,
-        frame: np.ndarray,
-        bbox: np.ndarray,
-        track_id: int,
-        alpha: float = Config.ELLIPSE_ALPHA
-    ) -> np.ndarray:
+    def draw_detection_rings(self, frame: np.ndarray, detections) -> np.ndarray:
         """
-        Disegna ellisse semitrasparente con colore fisso rosso
-        
-        Args:
-            frame: Frame su cui disegnare
-            bbox: Bounding box [x1, y1, x2, y2]
-            track_id: ID del track (non più usato per colore)
-            alpha: Trasparenza (0-1)
+        Disegna anelli sottili per TUTTE le detection temporalmente stabili.
+        Mostra agli stakeholder che il sistema 'vede' ogni mela.
         """
-        x1, y1, x2, y2 = map(int, bbox)
-        
-        # Centro e assi ellisse
-        center_x = (x1 + x2) // 2
-        center_y = (y1 + y2) // 2
-        axis_x = (x2 - x1) // 2
-        axis_y = (y2 - y1) // 2
-        
-        # Colore fisso
-        color = self.get_ellipse_color()
-        
-        # Crea overlay per trasparenza
-        overlay = frame.copy()
-        cv2.ellipse(
-            overlay,
-            (center_x, center_y),
-            (axis_x, axis_y),
-            0,  # angolo
-            0,  # start angle
-            360,  # end angle
-            color,
-            -1  # filled
-        )
-        
-        # Blend con alpha
-        cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, frame)
-        
-        # Bordo ellisse
-        cv2.ellipse(
-            frame,
-            (center_x, center_y),
-            (axis_x, axis_y),
-            0, 0, 360,
-            color,
-            2
-        )
-        
-        return frame
-    
-    def draw_trajectory(
-        self,
-        frame: np.ndarray,
-        centers: List[Tuple[int, int]],
-        track_id: int
-    ) -> np.ndarray:
-        """Disegna linea di traiettoria con colore fisso bordeaux"""
-        if len(centers) < 2:
+        if detections is None or len(detections) == 0:
             return frame
         
-        color = self.get_trajectory_color()
+        overlay = frame.copy()
+        color = Config.COLOR_DETECTION
         
-        # Disegna linea connessa tra i punti
-        for i in range(len(centers) - 1):
-            pt1 = centers[i]
-            pt2 = centers[i + 1]
-            cv2.line(frame, pt1, pt2, color, Config.LINE_THICKNESS)
+        for i in range(len(detections)):
+            bbox = detections.xyxy[i]
+            x1, y1, x2, y2 = map(int, bbox)
+            cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+            ax, ay = max((x2 - x1) // 2, 1), max((y2 - y1) // 2, 1)
+            
+            # Fill tenue
+            cv2.ellipse(overlay, (cx, cy), (ax, ay), 0, 0, 360, color, -1)
+            # Anello
+            cv2.ellipse(overlay, (cx, cy), (ax, ay), 0, 0, 360, color, Config.RING_THICKNESS)
         
-        # Disegna punto finale più grande
-        if centers:
-            cv2.circle(frame, centers[-1], 4, color, -1)
+        cv2.addWeighted(overlay, Config.DETECTION_RING_ALPHA, frame,
+                       1 - Config.DETECTION_RING_ALPHA, 0, frame)
+        return frame
+    
+    def draw_tracked_apples(self, frame: np.ndarray, smoothed_data: list) -> np.ndarray:
+        """
+        Annotazioni complete per mele tracked: glow + fill + bordo + label.
+        """
+        if not smoothed_data:
+            return frame
+        
+        # Pass 1: Glow esterno (thick ring, alpha blend)
+        glow_overlay = frame.copy()
+        for bbox_s, tid, conf in smoothed_data:
+            x1, y1, x2, y2 = map(int, bbox_s)
+            cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+            ax = max((x2 - x1) // 2 + 4, 1)
+            ay = max((y2 - y1) // 2 + 4, 1)
+            color = self.get_confidence_color(conf)
+            cv2.ellipse(glow_overlay, (cx, cy), (ax, ay), 0, 0, 360, color, Config.GLOW_THICKNESS)
+        
+        cv2.addWeighted(glow_overlay, Config.GLOW_ALPHA, frame, 1 - Config.GLOW_ALPHA, 0, frame)
+        
+        # Pass 2: Fill colorato (alpha blend)
+        fill_overlay = frame.copy()
+        for bbox_s, tid, conf in smoothed_data:
+            x1, y1, x2, y2 = map(int, bbox_s)
+            cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+            ax, ay = max((x2 - x1) // 2, 1), max((y2 - y1) // 2, 1)
+            color = self.get_confidence_color(conf)
+            cv2.ellipse(fill_overlay, (cx, cy), (ax, ay), 0, 0, 360, color, -1)
+        
+        cv2.addWeighted(fill_overlay, Config.TRACKED_FILL_ALPHA, frame,
+                       1 - Config.TRACKED_FILL_ALPHA, 0, frame)
+        
+        # Pass 3: Bordi opachi + label badges
+        for bbox_s, tid, conf in smoothed_data:
+            x1, y1, x2, y2 = map(int, bbox_s)
+            cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+            ax, ay = max((x2 - x1) // 2, 1), max((y2 - y1) // 2, 1)
+            color = self.get_confidence_color(conf)
+            
+            # Bordo ellisse
+            cv2.ellipse(frame, (cx, cy), (ax, ay), 0, 0, 360, color, 2)
+            
+            # Label badge
+            label = f"#{tid}"
+            lbl_sz = cv2.getTextSize(label, self.font_label, Config.TEXT_SCALE, 1)[0]
+            bx, by = x1, y1 - 8
+            bw, bh = lbl_sz[0] + 10, lbl_sz[1] + 8
+            
+            # Badge background
+            cv2.rectangle(frame, (bx, by - bh), (bx + bw, by), color, -1)
+            # Badge text
+            cv2.putText(frame, label, (bx + 5, by - 4),
+                       self.font_label, Config.TEXT_SCALE,
+                       (255, 255, 255), 1, cv2.LINE_AA)
+            
+            # Confidence % sotto il badge
+            conf_txt = f"{conf:.0%}"
+            cv2.putText(frame, conf_txt, (bx + 5, by + 12),
+                       self.font_label, Config.TEXT_SCALE * 0.8,
+                       color, 1, cv2.LINE_AA)
         
         return frame
     
-    def draw_hud(
+    def draw_premium_hud(
         self,
         frame: np.ndarray,
         frame_number: int,
-        current_count: int,
+        detected_count: int,
+        tracked_count: int,
         total_unique: int,
-        fps: float
+        fps: float,
+        total_frames: int = 0
     ) -> np.ndarray:
         """
-        Disegna HUD con statistiche in alto a sinistra
-        
-        Args:
-            frame: Frame su cui disegnare
-            frame_number: Numero frame corrente
-            current_count: Mele nel frame corrente
-            total_unique: Totale mele uniche
-            fps: FPS corrente
+        HUD premium con pannello glassmorphism.
         """
-        # Background HUD
-        hud_height = 120
-        overlay = frame.copy()
-        cv2.rectangle(overlay, (0, 0), (400, hud_height), (0, 0, 0), -1)
-        cv2.addWeighted(overlay, 0.6, frame, 0.4, 0, frame)
+        h, w = frame.shape[:2]
         
-        # Testi
-        texts = [
-            f"Frame: {frame_number}",
-            f"Mele correnti: {current_count}",
-            f"Totale uniche: {total_unique}",
-            f"FPS: {fps:.1f}"
+        # --- Pannello principale (alto-sinistra) ---
+        panel_w = min(280, w // 3)
+        panel_h = 200
+        margin = 12
+        
+        # Background pannello con alpha
+        overlay = frame.copy()
+        cv2.rectangle(overlay, (margin, margin),
+                     (margin + panel_w, margin + panel_h),
+                     Config.COLOR_HUD_BG, -1)
+        cv2.addWeighted(overlay, 0.85, frame, 0.15, 0, frame)
+        
+        # Linea accento superiore
+        cv2.line(frame, (margin, margin),
+                (margin + panel_w, margin),
+                Config.COLOR_HUD_ACCENT, 3)
+        
+        # Bordo pannello
+        cv2.rectangle(frame, (margin, margin),
+                     (margin + panel_w, margin + panel_h),
+                     (80, 80, 80), 1)
+        
+        # Contenuto
+        x = margin + 15
+        y = margin + 32
+        
+        # Titolo BACCO
+        cv2.putText(frame, "BACCO", (x, y),
+                   self.font_main, 0.75,
+                   Config.COLOR_HUD_ACCENT, 1, cv2.LINE_AA)
+        
+        # Sottotitolo
+        cv2.putText(frame, "Apple Detection", (x + 100, y),
+                   self.font_label, 0.35,
+                   Config.COLOR_HUD_LABEL, 1, cv2.LINE_AA)
+        
+        y += 38
+        
+        # Stats con indicatori colorati
+        stats = [
+            ("Detected", str(detected_count), Config.COLOR_DETECTION),
+            ("Tracked", str(tracked_count), Config.COLOR_TRACKED_HIGH),
+            ("Unique", str(total_unique), Config.COLOR_HUD_ACCENT),
         ]
         
-        y_offset = 25
-        for text in texts:
-            cv2.putText(
-                frame,
-                text,
-                (10, y_offset),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,
-                (0, 255, 0),
-                2
-            )
-            y_offset += 30
+        for label, value, color in stats:
+            # Dot indicatore
+            cv2.circle(frame, (x + 4, y - 4), 4, color, -1)
+            # Label
+            cv2.putText(frame, label, (x + 15, y),
+                       self.font_label, 0.42,
+                       Config.COLOR_HUD_LABEL, 1, cv2.LINE_AA)
+            # Value (allineato a destra)
+            v_sz = cv2.getTextSize(value, self.font_main, 0.6, 1)[0]
+            cv2.putText(frame, value,
+                       (margin + panel_w - 20 - v_sz[0], y),
+                       self.font_main, 0.6,
+                       Config.COLOR_HUD_TEXT, 1, cv2.LINE_AA)
+            y += 30
+        
+        # Separatore
+        y += 2
+        cv2.line(frame, (x, y - 12), (margin + panel_w - 15, y - 12),
+                (60, 60, 60), 1)
+        
+        # FPS con colore dinamico
+        fps_color = self.get_fps_color(fps)
+        fps_str = f"{fps:.1f} FPS"
+        cv2.putText(frame, fps_str, (x, y),
+                   self.font_main, 0.55,
+                   fps_color, 1, cv2.LINE_AA)
+        
+        # Frame counter
+        frame_str = f"Frame {frame_number}"
+        if total_frames > 0:
+            frame_str += f"/{total_frames}"
+        cv2.putText(frame, frame_str, (x, y + 22),
+                   self.font_label, 0.35,
+                   Config.COLOR_HUD_LABEL, 1, cv2.LINE_AA)
+        
+        # --- Barra progresso in basso ---
+        if total_frames > 0:
+            bar_h = 4
+            progress = min(frame_number / max(total_frames, 1), 1.0)
+            bar_w = int(w * progress)
+            cv2.rectangle(frame, (0, h - bar_h), (bar_w, h),
+                         Config.COLOR_HUD_ACCENT, -1)
+            cv2.rectangle(frame, (bar_w, h - bar_h), (w, h),
+                         (40, 40, 40), -1)
         
         return frame
-
+    
+    # Backward compatibility
+    def draw_trajectory(self, frame, centers, track_id):
+        """Disegna traiettoria (se abilitata)"""
+        if len(centers) < 2:
+            return frame
+        color = Config.TRAJECTORY_COLOR
+        for i in range(1, len(centers)):
+            pt1 = tuple(map(int, centers[i - 1]))
+            pt2 = tuple(map(int, centers[i]))
+            cv2.line(frame, pt1, pt2, color, Config.LINE_THICKNESS)
+        return frame
 
 # =============================================================================
 # APPLE DETECTION SYSTEM - Sistema principale
@@ -1067,6 +1116,7 @@ class AppleDetectionSystem:
         # Statistiche
         self.frame_count = 0
         self.fps = 0.0
+        self.total_frames = 0
         
         print("[INIT] ✅ Sistema pronto!")
     
@@ -1142,6 +1192,7 @@ class AppleDetectionSystem:
         if self.frame_count % 30 == 0 and detections_before != detections_after:
             print(f"[FILTER] Frame {self.frame_count}: {detections_before} det → {detections_after} stabili")
         # 3.5b. CARRY-FORWARD: inietta detection portate avanti nel flusso
+        filtered_detections = detections  # Salva TUTTE le detection filtrate per dual-layer
         detections = self.carry_forward.update_and_carry(detections, detections)
         
         # 4. Tracking con ByteTrack
@@ -1155,15 +1206,18 @@ class AppleDetectionSystem:
         track_ids = detections.tracker_id.tolist() if detections.tracker_id is not None else []
         self.id_registry.update(track_ids, self.frame_count, detections=detections)
         
-        # 6. Annotazione frame (usa frame_resized, non enhanced, per visualizzazione)
+        # 6. Annotazione frame - DUAL LAYER RENDERING
         frame_annotated = frame_resized.copy()
         
-        # 6.1. Applica filtro sfondo blu
+        # 6.1. Filtro sfondo sottile
         frame_annotated = self.viz.draw_background_filter(frame_annotated)
         
+        # 6.2. Layer 1: Detection rings per TUTTE le detection filtrate
+        frame_annotated = self.viz.draw_detection_rings(frame_annotated, filtered_detections)
+        
+        # 6.3. Layer 2: Tracked apples con annotazioni complete
+        smoothed_data = []
         if len(detections) > 0:
-            # Pre-calcola tutte le bbox smoothed
-            smoothed_data = []
             for i in range(len(detections)):
                 bbox = detections.xyxy[i]
                 track_id = int(detections.tracker_id[i]) if detections.tracker_id is not None else -1
@@ -1174,44 +1228,27 @@ class AppleDetectionSystem:
                 
                 bbox_smooth = self.smoother.smooth_bbox(track_id, bbox)
                 smoothed_data.append((bbox_smooth, track_id, confidence))
-            
-            # 6.2. Disegna TUTTE le ellissi su un singolo overlay, poi blend una volta
-            if smoothed_data:
-                overlay = frame_annotated.copy()
-                ellipse_color = self.viz.get_ellipse_color()
-                for bbox_smooth, track_id, _ in smoothed_data:
-                    x1, y1, x2, y2 = map(int, bbox_smooth)
-                    center = ((x1 + x2) // 2, (y1 + y2) // 2)
-                    axes = ((x2 - x1) // 2, (y2 - y1) // 2)
-                    cv2.ellipse(overlay, center, axes, 0, 0, 360, ellipse_color, -1)
-                
-                cv2.addWeighted(overlay, Config.ELLIPSE_ALPHA, frame_annotated, 
-                               1 - Config.ELLIPSE_ALPHA, 0, frame_annotated)
-                
-                # Bordi ellissi (non trasparenti)
-                for bbox_smooth, track_id, _ in smoothed_data:
-                    x1, y1, x2, y2 = map(int, bbox_smooth)
-                    center = ((x1 + x2) // 2, (y1 + y2) // 2)
-                    axes = ((x2 - x1) // 2, (y2 - y1) // 2)
-                    cv2.ellipse(frame_annotated, center, axes, 0, 0, 360, ellipse_color, 2)
-            
-            # 6.3. Disegna bbox e traiettorie (opachi, sopra le ellissi)
-            for bbox_smooth, track_id, confidence in smoothed_data:
-                frame_annotated = self.viz.draw_bbox(frame_annotated, bbox_smooth, track_id, confidence)
-                
-                if Config.SHOW_TRAJECTORY:
-                    centers = self.smoother.get_center_history(track_id)
-                    frame_annotated = self.viz.draw_trajectory(frame_annotated, centers, track_id)
         
-        # 7. HUD con statistiche
+        frame_annotated = self.viz.draw_tracked_apples(frame_annotated, smoothed_data)
+        
+        # 6.4. Traiettorie (se abilitate)
+        if Config.SHOW_TRAJECTORY and smoothed_data:
+            for bbox_smooth, track_id, _ in smoothed_data:
+                centers = self.smoother.get_center_history(track_id)
+                frame_annotated = self.viz.draw_trajectory(frame_annotated, centers, track_id)
+        
+        # 7. Premium HUD
         stats = self.id_registry.get_stats()
-        current_drawn = len(smoothed_data) if len(detections) > 0 else 0
-        frame_annotated = self.viz.draw_hud(
+        detected_count = len(filtered_detections) if filtered_detections is not None else 0
+        tracked_count = len(smoothed_data)
+        frame_annotated = self.viz.draw_premium_hud(
             frame_annotated,
             self.frame_count,
-            current_drawn,  # Mostra mele effettivamente disegnate
+            detected_count,
+            tracked_count,
             stats["total_unique"],
-            self.fps
+            self.fps,
+            total_frames=self.total_frames
         )
         
         # 8. Calcola FPS
@@ -1224,7 +1261,7 @@ class AppleDetectionSystem:
         # Statistiche
         statistics = {
             "frame": self.frame_count,
-            "current_apples": stats["currently_active"],
+            "current_apples": tracked_count,
             "total_unique": stats["total_unique"],
             "fps": self.fps,
             "scale": scale
@@ -1250,6 +1287,7 @@ class AppleDetectionSystem:
         
         # Info video
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        self.total_frames = total_frames
         fps_video = cap.get(cv2.CAP_PROP_FPS)
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
