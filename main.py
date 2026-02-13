@@ -51,9 +51,11 @@ class Config:
         "apple partially hidden",    # Mele parzialmente occluse
         "red round fruit hanging",   # Mele pendenti
         "red object on a tree", 
-        "red object under a leaf"
+        "red object under a leaf",
+        "red fruit under leaves",
+        "partial red fruit"
     ]
-    NMS_THRESHOLD = 0.3       # Aggressivo per eliminare duplicati
+    NMS_THRESHOLD = 0.45      # Meno aggressivo per preservare mele vicine ma distinte
     YOLO_IMGSZ = 1280         # Risoluzione interna YOLO (più alto = vede meglio piccoli)
     
     # === ADAPTIVE PARAMETERS ===
@@ -65,18 +67,18 @@ class Config:
     # === TRACKING (CONSERVATIVE) ===
     TRACK_THRESH = 0.10       # Basso per massimizzare track nella demo
     TRACK_BUFFER = 60         # Buffer 2s @ 30fps
-    MATCH_THRESH = 0.8        # IoU matching rigoroso per ID stabili
-    MIN_CONSECUTIVE = 3       # Track confermato dopo 3 frame consecutivi
+    MATCH_THRESH = 0.8        # IoU match rigoroso (essenziale per scene dense)
+    MIN_CONSECUTIVE = 2       # Track confermato dopo 2 frame (più reattivo)
     
     # === SMOOTHING (AGGRESSIVE) ===
-    SMOOTH_WINDOW = 20        # Smoothing forte per bounding box stabili
+    SMOOTH_WINDOW = 12        # Smoothing moderato per seguire movimenti reali
     
     # === TEMPORAL FILTER ===
     MIN_CONSECUTIVE_FRAMES = 2   # 2 frame consecutivi = stabile (più reattivo)
     TEMPORAL_MATCH_DISTANCE = 60 # Distanza leggermente maggiore per matching
     
     # === DETECTION CARRY-FORWARD ===
-    CARRY_FRAMES = 5             # Porta avanti detection mancanti per N frame
+    CARRY_FRAMES = 8             # Bridging occlusioni più lunghe
     CARRY_DECAY = 0.9            # Decadimento confidence per frame portato avanti
     
     # === ENHANCEMENT (CONDITIONAL) ===
@@ -111,6 +113,7 @@ class Config:
     COLOR_FPS_BAD = (60, 60, 255)          # FPS rosso (<8)
     
     # Parametri rendering
+    SHOW_DETECTED = False          # Mostra anelli detection raw (False = solo tracked)
     DETECTION_RING_ALPHA = 0.30    # Anelli detection visibili
     TRACKED_FILL_ALPHA = 0.30     # Fill tracked
     GLOW_ALPHA = 0.40             # Glow esterno tracked
@@ -951,7 +954,7 @@ class VisualizationManager:
         
         # --- Pannello principale (alto-sinistra) ---
         panel_w = min(280, w // 3)
-        panel_h = 200
+        panel_h = 200 if Config.SHOW_DETECTED else 170
         margin = 12
         
         # Background pannello con alpha
@@ -988,11 +991,11 @@ class VisualizationManager:
         y += 38
         
         # Stats con indicatori colorati
-        stats = [
-            ("Detected", str(detected_count), Config.COLOR_DETECTION),
-            ("Tracked", str(tracked_count), Config.COLOR_TRACKED_HIGH),
-            ("Unique", str(total_unique), Config.COLOR_HUD_ACCENT),
-        ]
+        stats = []
+        if Config.SHOW_DETECTED:
+            stats.append(("Detected", str(detected_count), Config.COLOR_DETECTION))
+        stats.append(("Tracked", str(tracked_count), Config.COLOR_TRACKED_HIGH))
+        stats.append(("Unique", str(total_unique), Config.COLOR_HUD_ACCENT))
         
         for label, value, color in stats:
             # Dot indicatore
@@ -1212,8 +1215,9 @@ class AppleDetectionSystem:
         # 6.1. Filtro sfondo sottile
         frame_annotated = self.viz.draw_background_filter(frame_annotated)
         
-        # 6.2. Layer 1: Detection rings per TUTTE le detection filtrate
-        frame_annotated = self.viz.draw_detection_rings(frame_annotated, filtered_detections)
+        # 6.2. Layer 1: Detection rings (se abilitato)
+        if Config.SHOW_DETECTED:
+            frame_annotated = self.viz.draw_detection_rings(frame_annotated, filtered_detections)
         
         # 6.3. Layer 2: Tracked apples con annotazioni complete
         smoothed_data = []
